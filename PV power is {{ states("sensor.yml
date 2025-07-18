@@ -1,0 +1,6 @@
+PV power is {{ states("sensor.deye_sunsynk_sol_ark_pv_power") }}.
+Battery power is {{ states("sensor.deye_sunsynk_sol_ark_battery_power") }}.
+Load power is {{ states("sensor.deye_sunsynk_sol_ark_load_power") }}.
+Battery SoC is {{ states("sensor.deye_sunsynk_sol_ark_battery_state_of_charge") }}.
+Float voltage is {{ states("number.deye_sunsynk_sol_ark_battery_float_charge_voltage") }}.
+Grid boost is {{ states("number.deye_sunsynk_sol_ark_capacity_point_1") }}%.

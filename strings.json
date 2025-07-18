@@ -1,0 +1,69 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Device is already configured.",
+      "already_in_progress": "Configuration flow is already in progress",
+      "authorize_url_timeout": "Timeout generating authorize URL.",
+      "missing_configuration": "The component is not configured. Please follow the documentation.",
+      "no_url_available": "No URL available. For information about this error, [check the help section]({docs_url})",
+      "oauth_error": "Received invalid token data.",
+      "oauth_failed": "Error while obtaining access token.",
+      "oauth_timeout": "Timeout resolving OAuth token.",
+      "oauth_unauthorized": "OAuth authorization error while obtaining access token.",
+      "user_rejected_authorize": "Account linking rejected: {error}"
+    },
+    "create_entry": {
+      "default": "Successfully authenticated"
+    },
+    "step": {
+      "pick_implementation": {
+        "title": "Pick authentication method"
+      },
+      "user": {
+        "title": "Enter your MySol-Ark Cloud email and password",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "Enter your email address for the Sol-Ark data cloud.",
+          "password": "Enter your password for the Sol-Ark data cloud."
+        }
+      },
+      "solcast_api": {
+        "title": "Enter your Solcast API key and resource ID",
+        "description": "(These are found under your account settings at solcast.com)",
+        "data": {
+          "api_key": "API Key",
+          "resource_id": "Resource ID"
+        },
+        "data_description": {
+          "api_key": "Enter the API key for your Solcast account (found under your account settings).",
+          "resource_id": "Enter the resource ID for your Solcast account."
+        }
+      },
+      "parameters": {
+        "title": "Grid Boost options",
+        "description": "(These are found under your account settings at solcast.com)",
+        "data": {
+          "boost_calculation": "Boost Calculation",
+          "history_days": "History Days",
+          "forecast_hour": "Forecast Hour",
+          "min_battery_soc": "Minimum Battery SoC",
+          "percentile": "Percentile"
+        },
+        "data_description": {
+          "boost_calculation": "State of the Grid Boost feature.",
+          "history_days": "Number of days of load history to use for Grid Boost calculations.",
+          "forecast_hour": "A list of hours when you want to check for new Solcast forecasts (e.g., [23] or [8,23]).",
+          "min_battery_soc": "At day end, what is the lowest SoC you hope to ever see?",
+          "percentile": "Solcast forecasts range from pessimistic (10) to optimistic (90). Pessimistic will boost more."
+        }
+      }
+    },
+    "error": {
+      "invalid_solark_auth": "Setup: Invalid authentication, please check your username and password.",
+      "invalid_solcast_auth": "Setup: Solcast API login failed."
+    }
+  }
+}

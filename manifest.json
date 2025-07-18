@@ -1,0 +1,14 @@
+{
+  "domain": "tou_scheduler",
+  "name": "Time of Use Scheduler",
+  "version": "0.9.1",
+  "codeowners": ["@ohsnyt"],
+  "config_flow": true,
+  "dependencies": ["application_credentials", "recorder"],
+  "documentation": "https://www.home-assistant.io/integrations/tou_scheduler",
+  "homekit": {},
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": []
+}

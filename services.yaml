@@ -1,0 +1,107 @@
+set_boost:
+  description: "Set the boost mode"
+  fields:
+    boost:
+      description: "Boost mode"
+      example: "testing"
+      required: true
+      selector:
+        select:
+          options:
+            - "Automatic"
+            - "Manual"
+            - "Testing"
+            - "Off"
+
+set_manual_grid_boost:
+  description: "Set the manual grid boost value"
+  fields:
+    manual_grid_boost:
+      description: "Manual grid boost value"
+      example: 50
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+
+set_solcast_percentile:
+  description: "Set the Solcast percentile value"
+  fields:
+    percentile:
+      description: "Solcast percentile value"
+      example: 50
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+
+set_solcast_update_hours:
+  description: "Set the Solcast update hours"
+  fields:
+    update_hours:
+      description: "Solcast update hours"
+      example: "0, 6, 12, 18"
+      required: true
+      selector:
+        text:
+
+set_days_of_load_history:
+  description: "Set the days of load history"
+  fields:
+    days_of_load_history:
+      description: "Days of load history"
+      example: 7
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 30
+
+set_boost_settings:
+  description: "Set all major boost settings"
+  fields:
+    boost_mode:
+      description: "Boost mode"
+      example: "testing"
+      required: true
+      selector:
+        select:
+          options:
+            - "Automatic"
+            - "Manual"
+            - "Testing"
+            - "Off"
+    str, manual_grid_boost:
+      description: "Manual grid boost value"
+      example: 50
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+    percentile:
+      description: "Solcast percentile value"
+      example: 50
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+    days_of_load_history:
+      description: "Days of load history"
+      example: 7
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 10
+    update_hour:
+      description: "Solcast update hour"
+      example: 23
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 23
