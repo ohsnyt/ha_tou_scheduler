@@ -19,6 +19,7 @@ COORDINATOR_KEY = "tou_coordinator"
 SHADE_KEY = "tou_scheduler_storage"
 FORECAST_KEY = "tou_scheduler_forecast"
 DATA_KEY = "tou_scheduler_data"
+FORECAST_SOLAR_KEY = "forecast_solar_data"
 
 # Define the common names for the inverter models
 SOLARK_MODEL_TO_NAME = {
@@ -57,8 +58,15 @@ GRID_BOOST_SET = "sensor.deye_sunsynk_sol_ark_battery_capacity_point_1"
 MIN_BATTERY_SOC = "sensor.deye_sunsynk_sol_ark_battery_stop_discharge_capacity"
 BATTERY_SOC = "sensor.deye_sunsynk_sol_ark_battery_state_of_charge"
 
-# Default inverter efficiency value is 85%, in case we can't compute it
+# URL for the forecast solar API
+FORECAST_SOLAR_API_URL = "https://api.forecast.solar/estimate/watts/"
+
+# Default values for the Tou Scheduler configuration
 DEFAULT_INVERTER_EFFICIENCY = 0.85
+DEFAULT_LOAD_ESTIMATE = 1000
+MAX_SOC = 99
+MIN_SOC_FOR_CHARGING = 96
+
 
 # Configuration option keys, to reduce typing mistakes in the code
 UPDATE_INTERVAL = 1  # Update interval in minutes

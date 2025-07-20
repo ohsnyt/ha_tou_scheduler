@@ -31,8 +31,12 @@ from .const import (
     LOAD_POWER,
     PV_POWER,
     SHADE_KEY,
+    DEFAULT_LOAD_ESTIMATE,
+    MAX_SOC,
+    MIN_SOC_FOR_CHARGING,
 )
 from .coordinator import TOUUpdateCoordinator
+from .forecast_solar import ForecastSolar
 from .solcast_api import SolcastAPI
 
 logger = logging.getLogger(__name__)
@@ -43,25 +47,22 @@ else:
 
 
 # Helper functions
-def string_to_int_list(string_list) -> list[int]:
+def string_to_int_list(string_list: str) -> list[int]:
     """Convert a string containing one or more integers into a list of ints."""
     return [int(i.strip()) for i in string_list.split(",") if i.strip().isdigit()]
-
 
 def printable_hour(hour: int) -> str:
     """Return a printable hour string in 12-hour format with 'am' or 'pm' suffix.
 
     Takes an integer and returns a formatted string in 12-hour format with am/pm.
     """
-    # Check for invalid hour and just return the number as a string
     if hour < 0 or hour > 23:
         return str(hour)
     return (
-        f"{'\u00a0' if ((hour%12 < 10) and hour%12 > 0) else ''}"
+        f"{'\u00a0' if ((hour % 12 < 10) and hour % 12 > 0) else ''}"
         f"{(hour % 12) or 12}"
         f"{'am' if hour < 12 else 'pm'}"
     )
-
 
 class TOUScheduler:
     """Class to manage Time of Use (TOU) scheduling for Home Assistant.
@@ -99,9 +100,9 @@ class TOUScheduler:
         self._battery_capacity_last_updated: datetime | None = None  # Last time the battery capacity was updated
         self.realtime_battery_soc: float = 0.0  # Current battery state of charge in %
 
-        # Here is the solcast info
+        # Here is the solar forecast info
         self.solcast_api: SolcastAPI = solcast_api
-
+        self.forecast_solar = ForecastSolar(hass, panels, timezone)
         # Here is the shading info: default to 0.0 for each hour of the day and no last update date
         self.daily_shading: dict[int, float] = dict.fromkeys(range(24), 0.0)
 
@@ -245,12 +246,13 @@ class TOUScheduler:
     def _safe_get_ha_sensor(self, entity_id: str) -> float:
         """Safely get the float value of a Home Assistant sensor entity."""
         state_obj = self.hass.states.get(entity_id)
+        if not state_obj or state_obj.state in (None, "unknown", "unavailable"):
+            logger.debug(f"Sensor {entity_id} not available or unknown.")
+            return 0.0
         try:
-            if state_obj is None or state_obj.state in (None, "unknown", "unavailable"):
-                logger.debug(f"Entity {entity_id} not found or has no valid state.")
-            return float(state_obj.state) if state_obj and state_obj.state not in (None, "unknown", "unavailable") else 0.0
+            return float(state_obj.state)
         except (ValueError, TypeError):
-            logger.warning(f"Invalid value for {entity_id}: {getattr(state_obj, 'state', None)}")
+            logger.warning(f"Invalid value for {entity_id}: {state_obj.state}")
             return 0.0
         
     async def _update_total_battery_capacity(self) -> float:
@@ -260,7 +262,7 @@ class TOUScheduler:
         """
         now = datetime.now(ZoneInfo(self.timezone))
         if self._battery_capacity_last_updated is not None and self._battery_capacity_last_updated.date() == now.date():
-            return  self.battery_capacity   # Already updated today, return the cached value
+            return self.battery_capacity   # Already updated today, return the cached value
 
         entity_ids = [
             entity_id
@@ -274,7 +276,6 @@ class TOUScheduler:
 
         logger.debug("Total battery Ah capacity calculated to be: %.2f", total_capacity)
         return total_capacity
-
 
     async def _update_boost_settings(
         self,
@@ -702,19 +703,21 @@ class TOUScheduler:
             logger.debug("Unable to get. MQTT may not be connected yet.")
             return {}
         
-        # Calculate the estimated time remaining until the battery is exhausted since the last time the battery capacity was updated.
+        # Cache the current time in the correct timezone
+        now = datetime.now(ZoneInfo(self.timezone))
+
+        # Calculate the estimated time remaining until the battery is exhausted.
         if self.data_updated is not None:
-            # Parse the last update time and set the correct timezone
             data_updated_time = datetime.strptime(self.data_updated, "%a %I:%M %p").replace(
                 tzinfo=ZoneInfo(self.timezone)
             )
-            # Compute elapsed minutes since last update
-            elapsed_minutes = int((datetime.now(ZoneInfo(self.timezone)) - data_updated_time).total_seconds() / 60)
+            elapsed_minutes = int((now - data_updated_time).total_seconds() / 60)
         else:
+            elapsed_minutes = 0
             logger.debug("Data not updated yet. Returning default values.")
 
         # Cache the current hour for the current hour load estimate below
-        hour = datetime.now(ZoneInfo(self.timezone)).hour
+        hour = now.hour
 
         # Return the data as a dictionary
         return {
