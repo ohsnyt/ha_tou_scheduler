@@ -15,9 +15,6 @@ from .tou_scheduler import TOUScheduler
 
 _LOGGER = logging.getLogger(__name__)
 
-# Define the configuration schema
-# CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up TOU Scheduler from a config entry."""

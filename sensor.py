@@ -77,32 +77,14 @@ TOU_SENSOR_ENTITIES: dict[str, OhSnytSensorEntityDescription] = {
         suggested_display_precision=0,
     ),
     # Battery related sensors.
-    "batt_time": OhSnytSensorEntityDescription(
-        key="batt_time",
+    "battery_time_remaining": OhSnytSensorEntityDescription(
+        key="battery_time_remaining",
         icon="mdi:timer-outline",
         name="Battery Time Remaining",
         native_unit_of_measurement="h",
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-    ),
-    "batt_change_per_hour": OhSnytSensorEntityDescription(
-        key="batt_change_per_hour",
-        icon="mdi:arrow-up-down",
-        name="Battery Energy Change per Hour",
-        native_unit_of_measurement="%",
-        device_class=SensorDeviceClass.BATTERY,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-    ),
-    "batt_next_hour": OhSnytSensorEntityDescription(
-        key="batt_next_hour",
-        icon="mdi:arrow-up-down",
-        name="Battery SoC estimated in one hour",
-        native_unit_of_measurement="%",
-        device_class=SensorDeviceClass.BATTERY,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=0,
     ),
 }
 

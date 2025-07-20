@@ -1,4 +1,4 @@
-"""TOU Scheduler for Home Assistant."""
+"""TOU Scheduler for Home Assistant using Solar Assistant with MQTT and SolArk (Deye) inverter."""
 
 from __future__ import annotations
 
@@ -16,10 +16,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import (
-    BATTERY_LOST_WH,
-    BATTERY_MAX_WH,
     BATTERY_SOC,
     BATTERY_WH_PER_PERCENT,
+    FIVE_DAYS,
     DATA_KEY,
     DEBUGGING,
     DEFAULT_GRID_BOOST_HISTORY,
@@ -28,7 +27,7 @@ from .const import (
     DEFAULT_GRID_BOOST_STARTING_SOC,
     DEFAULT_INVERTER_EFFICIENCY,
     FORECAST_KEY,
-    GRID_BOOST,
+    BATTERY_CAPACITY,
     LOAD_POWER,
     PV_POWER,
     SHADE_KEY,
@@ -68,16 +67,6 @@ class TOUScheduler:
     """Class to manage Time of Use (TOU) scheduling for Home Assistant.
 
     The class contains:
-      - 1 constructor to initialize the TOU Scheduler.
-      - 7 methods to manage data loading, saving, and requesting data from Home Assistant.
-      - 3 methods to manage options changes by the user.
-      - 4 private calculation methods.
-      - 1 private method to update certain data every hour.
-      - 3 public method
-      - 3  public methods to start the TOU Scheduler:
-        a)  Load data and run necessary functions when starting the TOU Scheduler.
-        b)  Update the sensor data every 5 minutes with the latest data.
-        c)  Pass the sensor dictionary data to Home Assistant.
     """
 
     def __init__(
@@ -104,9 +93,11 @@ class TOUScheduler:
         self.daily_load_averages: dict[int, float] = {}
 
         # Here is the battery info (capacity is Ah, flow is A)
-        self.battery_capacity: float = 0.0
-        self.battery_capacity_last_updated: datetime | None = None
-        self.battery_flow: float = 0.0
+        self.battery_flow: float = 0.0  # Current battery flow in watts
+        self.battery_shutdown: int = 0  # Battery shutdown SoC
+        self.battery_capacity: float = 0.0  # Battery capacity in Ah
+        self._battery_capacity_last_updated: datetime | None = None  # Last time the battery capacity was updated
+        self.realtime_battery_soc: float = 0.0  # Current battery state of charge in %
 
         # Here is the solcast info
         self.solcast_api: SolcastAPI = solcast_api
@@ -116,9 +107,10 @@ class TOUScheduler:
 
         # Here is the TOU boost info we will monitor and update
         self.manual_grid_boost: int = DEFAULT_GRID_BOOST_STARTING_SOC
-        self.batt_minutes_remaining: int = 0
+        self.battery_minutes_remaining: int = 0
         self.calculated_grid_boost: int = DEFAULT_GRID_BOOST_STARTING_SOC
         self.calculated_grid_boost_day: str = ""
+        self.actual_grid_boost: int = DEFAULT_GRID_BOOST_STARTING_SOC
         self.min_battery_soc: int = DEFAULT_GRID_BOOST_MIDNIGHT_SOC
         self.grid_boost_start: str = DEFAULT_GRID_BOOST_START
         self._boost: str = "Testing"
@@ -128,21 +120,21 @@ class TOUScheduler:
         # Time for hourly tasks
         self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
 
-    # Data loading and saving
-    async def async_load_shading(self):
+    # Data loading and saving. There are three data stores: shading, forecast, and general data
+    async def _load_shading(self):
         """Load shading data from storage."""
-        data = await self.store_shade.async_load()
+        data = await self.store_shade._load()
         data = {int(k): v for k, v in data.items()} if data else None
         if data is not None:
             self.daily_shading = data
 
-    async def async_save_shading(self):
+    async def _save_shading(self):
         """Save shading data to storage."""
-        await self.store_shade.async_save(self.daily_shading)
+        await self.store_shade._save(self.daily_shading)
 
-    async def async_load_forecast(self):
+    async def _load_forecast(self):
         """Load forecast data from storage."""
-        data = await self.store_forecast.async_load()
+        data = await self.store_forecast._load()
         if data is not None:
             self.solcast_api.forecast = data
             # Set the update variable based on the oldest date in the data
@@ -152,14 +144,15 @@ class TOUScheduler:
                 first_date, "%Y-%m-%d-%H"
             ) - timedelta(hours=1)
 
-    async def async_save_forecast(self):
+    async def _save_forecast(self):
         """Save forecast data to storage."""
-        await self.store_forecast.async_save(self.solcast_api.forecast)
+        await self.store_forecast._save(self.solcast_api.forecast)
 
-    async def async_load_data(self):
+    async def _load_data(self):
         """Load data from storage."""
-        data = await self.store_data.async_load()
+        data = await self.store_data._load()
         if data:
+            self.actual_grid_boost = data.get("actual_grid_boost", DEFAULT_GRID_BOOST_STARTING_SOC)
             self.manual_grid_boost = data.get("manual_grid_boost", DEFAULT_GRID_BOOST_STARTING_SOC)
             self.calculated_grid_boost = data.get("calculated_grid_boost", DEFAULT_GRID_BOOST_STARTING_SOC)
             self.calculated_grid_boost_day = data.get("calculated_grid_boost_day", "")
@@ -168,9 +161,11 @@ class TOUScheduler:
             self._boost = data.get("_boost", "Testing")
             self.days_of_load_history = data.get("days_of_load_history", DEFAULT_GRID_BOOST_HISTORY)
 
-    async def async_save_data(self):
+    async def _save_data(self):
         """Save data to storage."""
+        #NOTE: I SHOULD SAVE THIS ANY TIME ANY OF THESE VALUES CHANGE
         data = {
+            "actual_grid_boost": self.actual_grid_boost,
             "manual_grid_boost": self.manual_grid_boost,
             "calculated_grid_boost": self.calculated_grid_boost,
             "calculated_grid_boost_day": self.calculated_grid_boost_day,
@@ -179,15 +174,109 @@ class TOUScheduler:
             "_boost": self._boost,
             "days_of_load_history": self.days_of_load_history,
         }
-        await self.store_data.async_save(data)
-
-    async def async_stop(self):
-        """Stop the TOU Scheduler."""
-        await self.async_save_data()
+        await self.store_data._save(data)
 
 
     # SERVICE CALLS start here
-    async def async_update_boost_settings(
+    async def set_boost(self, boost: str) -> None:
+        """Set the boost mode."""
+        self._boost = boost
+        self.hass.config_entries._update_entry(
+            self.config_entry,
+            options={**self.config_entry.options, "boost_mode": boost},
+        )
+        # We need to rerun the hourly updates
+        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
+        await self._hourly_updates()
+
+    async def set_manual_grid_boost(self, manual_grid_boost: int) -> None:
+        """Set the manual grid boost value."""
+        self.manual_grid_boost = manual_grid_boost
+        self.hass.config_entries._update_entry(
+            self.config_entry,
+            options={
+                **self.config_entry.options,
+                "manual_grid_boost": manual_grid_boost,
+            },
+        )
+        # We probably need to rerun the hourly updates
+        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
+        await self._hourly_updates()
+        # Save the new manual grid boost to storage
+        await self._save_data()
+
+    async def set_solcast_percentile(self, percentile: int) -> None:
+        """Set the Solcast percentile value."""
+        self.solcast_api.percentile = percentile
+        self.hass.config_entries._update_entry(
+            self.config_entry,
+            options={**self.config_entry.options, "percentile": percentile},
+        )
+        # We need to rerun the hourly updates
+        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
+        await self._hourly_updates()
+
+    async def set_solcast_update_hour(self, update_hour: str) -> None:
+        """Set the Solcast update hours."""
+        self.solcast_api.update_hour = int(update_hour)
+        self.hass.config_entries._update_entry(
+            self.config_entry,
+            options={**self.config_entry.options, "forecast_hour": update_hour},
+        )
+        # We need to rerun the hourly updates
+        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
+        await self._hourly_updates()
+
+    async def set_days_of_load_history(self, days_of_load_history: int) -> None:
+        """Set the days of load history."""
+        self.days_of_load_history = days_of_load_history
+        self.hass.config_entries._update_entry(
+            self.config_entry,
+            options={**self.config_entry.options, "history_days": days_of_load_history},
+        )
+        # We need to rerun the hourly updates
+        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
+        await self._hourly_updates()
+        # Save the new days of load history to storage
+        await self._save_data()
+    # SERVICE CALLS end here
+
+    # Internal methods for data retrieval and calculations
+    def _safe_get_ha_sensor(self, entity_id: str) -> float:
+        """Safely get the float value of a Home Assistant sensor entity."""
+        state_obj = self.hass.states.get(entity_id)
+        try:
+            if state_obj is None or state_obj.state in (None, "unknown", "unavailable"):
+                logger.debug(f"Entity {entity_id} not found or has no valid state.")
+            return float(state_obj.state) if state_obj and state_obj.state not in (None, "unknown", "unavailable") else 0.0
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid value for {entity_id}: {getattr(state_obj, 'state', None)}")
+            return 0.0
+        
+    async def _update_total_battery_capacity(self) -> float:
+        """
+        Private method to update and store the total battery Ah capacity.
+        Sums all Home Assistant sensors matching the sensor 'BATTERY_CAPACITY'.
+        """
+        now = datetime.now(ZoneInfo(self.timezone))
+        if self._battery_capacity_last_updated is not None and self._battery_capacity_last_updated.date() == now.date():
+            return  self.battery_capacity   # Already updated today, return the cached value
+
+        entity_ids = [
+            entity_id
+            for entity_id in self.hass.states._entity_ids()
+            if entity_id.startswith(BATTERY_CAPACITY)
+        ]
+        total_capacity = 0.0
+        for entity_id in entity_ids:
+            value = self._safe_get_ha_sensor(entity_id)
+            total_capacity += value
+
+        logger.debug("Total battery Ah capacity calculated to be: %.2f", total_capacity)
+        return total_capacity
+
+
+    async def _update_boost_settings(
         self,
         boost_mode: str,
         manual_grid_boost: int,
@@ -208,69 +297,10 @@ class TOUScheduler:
         self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
         await self._hourly_updates()
 
-        # Call the coordinator and request async_request_refresh
+        # Call the coordinator and request _request_refresh
         if self.coordinator:
-            await self.coordinator.async_request_refresh()
+            await self.coordinator._request_refresh()
 
-    async def set_boost(self, boost: str) -> None:
-        """Set the boost mode."""
-        self._boost = boost
-        self.hass.config_entries.async_update_entry(
-            self.config_entry,
-            options={**self.config_entry.options, "boost_mode": boost},
-        )
-        # We need to rerun the hourly updates
-        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
-        await self._hourly_updates()
-
-    async def set_manual_grid_boost(self, manual_grid_boost: int) -> None:
-        """Set the manual grid boost value."""
-        self.manual_grid_boost = manual_grid_boost
-        self.hass.config_entries.async_update_entry(
-            self.config_entry,
-            options={
-                **self.config_entry.options,
-                "manual_grid_boost": manual_grid_boost,
-            },
-        )
-        # We probably need to rerun the hourly updates
-        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
-        await self._hourly_updates()
-
-    async def set_solcast_percentile(self, percentile: int) -> None:
-        """Set the Solcast percentile value."""
-        self.solcast_api.percentile = percentile
-        self.hass.config_entries.async_update_entry(
-            self.config_entry,
-            options={**self.config_entry.options, "percentile": percentile},
-        )
-        # We need to rerun the hourly updates
-        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
-        await self._hourly_updates()
-
-    async def set_solcast_update_hour(self, update_hour: str) -> None:
-        """Set the Solcast update hours."""
-        self.solcast_api.update_hour = int(update_hour)
-        self.hass.config_entries.async_update_entry(
-            self.config_entry,
-            options={**self.config_entry.options, "forecast_hour": update_hour},
-        )
-        # We probably need to rerun the hourly updates
-        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
-        await self._hourly_updates()
-
-    async def set_days_of_load_history(self, days_of_load_history: int) -> None:
-        """Set the days of load history."""
-        self.days_of_load_history = days_of_load_history
-        self.hass.config_entries.async_update_entry(
-            self.config_entry,
-            options={**self.config_entry.options, "history_days": days_of_load_history},
-        )
-        # We probably need to rerun the hourly updates
-        self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
-        await self._hourly_updates()
-
-    # SERVICE CALLS end here
 
     # Home Assistant calls to get statistics
     async def _request_ha_statistics(
@@ -291,15 +321,7 @@ class TOUScheduler:
         start_time_utc = start_time.astimezone(ZoneInfo("UTC"))
         end_time_utc = end_time.astimezone(ZoneInfo("UTC"))
 
-        # # Log the request
-        # logger.debug(
-        #     "Statistics for %s gathered from %s until %s.",
-        #     entity_ids,
-        #     start_time_utc.strftime("%a at %-I %p"),
-        #     end_time_utc.strftime("%a at %-I %p"),
-        # )
-
-        return await get_instance(self.hass).async_add_executor_job(
+        return await get_instance(self.hass)._add_executor_job(
             self._get_statistics_during_period,
             start_time_utc,
             end_time_utc,
@@ -319,7 +341,7 @@ class TOUScheduler:
         )
 
         # Get the statistics for the last hour
-        stats = await get_instance(self.hass).async_add_executor_job(
+        stats = await get_instance(self.hass)._add_executor_job(
             self._get_statistics_during_period,
             start_of_last_hour,
             end_of_last_hour,
@@ -328,11 +350,6 @@ class TOUScheduler:
 
         # Extract the mean value for the entity_id
         mean_value = stats.get(entity_id, [{}])[0].get("mean", 0.0)
-        # logger.debug(
-        #     ">>>>PV power generation at %s was %s wH<<<<",
-        #     printable_hour(start_of_last_hour.hour),
-        #     mean_value,
-        # )
         return mean_value
 
     def _get_statistics_during_period(
@@ -354,27 +371,10 @@ class TOUScheduler:
         return defaultdict(list, stats)
     # End of Home Assistant calls to get statistics
 
-    # START of Home Assistant calls to get/set current sensor states and number values
-    async def get_sensor_state(self, entity_id: str) -> float:
-        """Get the current state of this entity as a float, or 0.0 if unavailable or invalid."""
-        state = self.hass.states.get(entity_id=entity_id)
-        if state is None or state.state in (None, "unknown", "unavailable"):
-            return 0.0
-        try:
-            return float(state.state)
-        except (ValueError, TypeError):
-            return 0.0
-        
     async def write_grid_boost_soc(self, boost: int) -> None:
         """Set the grid boost value into capacity point 1."""
         if self._boost in {"Testing", "Off"}:
             return
-        state = await self.get_sensor_state(entity_id=GRID_BOOST)
-        if state is None or state == 0.0:
-                logger.error("MQTT is not connected. Cannot set grid boost.")
-                self._hourly_task_next_start = datetime.now(ZoneInfo(self.timezone))
-                return
-
         logger.debug(
             "Trying async method to set grid boost to %s%%.",
             boost,
@@ -382,50 +382,8 @@ class TOUScheduler:
         my_topic = "sa/inverter_1/capacity_point_1/set"
         service_data = { "payload": str(boost), "topic": my_topic }
         # logger.info("Service data: %s", service_data)
-        await self.hass.services.async_call("mqtt","publish", service_data, False)
-        
-    async def _get_battery_capacity(self) -> float:
-        """Get the total battery capacity in Ah from all sa/battery_*/capacity entities once a day if > 0."""
-        if self.battery_capacity_last_updated is not None:
-            # If we have already updated the battery capacity today, return the cached value
-            if self.battery_capacity_last_updated.date() == datetime.now(ZoneInfo(self.timezone)).date():
-                return self.battery_capacity
-        total_capacity = 0.0
-        # Iterate over all states in Home Assistant
-        for state in self.hass.states.async_all():
-            if not hasattr(state, "entity_id") or not hasattr(state, "state"):
-                continue
-            if state.entity_id.startswith("sensor.deye_sunsynk_sol_ark_capacity"):
-                try:
-                    value = float(state.state)
-                    total_capacity += value
-                except (ValueError, TypeError):
-                    continue
-        # If we have a total capacity, update the battery capacity and last updated date
-        if total_capacity > 0:
-            self.battery_capacity = total_capacity
-            self.battery_capacity_last_updated = datetime.now(ZoneInfo(self.timezone))
-            logger.debug(
-                "Total battery capacity updated to %.2f Ah at %s",
-                self.battery_capacity,
-                self.battery_capacity_last_updated.strftime("%Y-%m-%d %H:%M:%S"),
-            )
-        else:
-            logger.warning("No valid battery capacity found. Using 0.0 Ah.")
-            self.battery_capacity = 0.0
-            self.battery_capacity_last_updated = None
-        return total_capacity
-    
-    async def _get_battery_flow(self) -> float:
-        """Get the total battery current flow in A from all batteries."""
-        state = self.hass.states.get("sensor.deye_sunsynk_sol_ark_battery_current")
-        if state is None or state.state in (None, "unknown", "unavailable"):
-            return 0.0
-        try:
-            return float(state.state)
-        except (ValueError, TypeError):
-            return 0.0
-        
+        await self.hass.services._call("mqtt","publish", service_data, False)
+        self.actual_grid_boost = boost
     # End of Home Assistant calls to get current sensor states
 
 
@@ -451,19 +409,13 @@ class TOUScheduler:
         # Get the pv data for the current hour, calculate the average PV power for the past hour, updating as needed
         pv_average = await self._get_pv_statistic_for_last_hour()
 
-        # logger.debug(
-        #     "Average PV power for the past hour: %s, last sun estimate is: %.2f",
-        #     pv_average,
-        #     self.solcast_api.get_previous_hour_sun_estimate(),
-        # )
         # Update shading if we had a positive average PV power, battery soc is low enough to allow charging, and the sun was full
         last_hour = (datetime.now(ZoneInfo(self.timezone)).hour - 1) % 24
-        soc = await self.get_sensor_state(BATTERY_SOC)
 
         if (
             pv_average > 0
             and self.solcast_api.get_previous_hour_pv_estimate() > 0
-            and soc < 96
+            and self.realtime_battery_soc < 96
             and self.solcast_api.get_previous_hour_sun_estimate() > 0.95
         ):
             shading = 1 - min(
@@ -478,7 +430,7 @@ class TOUScheduler:
             )
 
             # Write the shading to the hass storage
-            await self.async_save_shading()
+            await self._save_shading()
 
     async def _calculate_load_estimates(self) -> None:
         """Calculate the daily load averages once a day."""
@@ -539,11 +491,9 @@ class TOUScheduler:
         starting_time = datetime.now(ZoneInfo(self.timezone)).strftime(
             "%a %-I %p"
         )
-        soc = await self.get_sensor_state(BATTERY_SOC)
         # If the battery is empty, MQTT is not connected, or the inverter is off, return
-        if soc == 0:
+        if self.realtime_battery_soc == 0:
             return
-        batt_wh_usable = soc / 100 * BATTERY_MAX_WH - BATTERY_LOST_WH
         minutes = 0
 
         # Log for debugging
@@ -551,9 +501,9 @@ class TOUScheduler:
         logger.debug(
             "Starting at %s with %s wH usable energy.",
             printable_hour(hour),
-            batt_wh_usable,
+            self.battery_wh_usable,
         )
-        while batt_wh_usable > 0 and minutes < 5 * 24 * 60:
+        while self.battery_wh_usable > 0 and minutes < FIVE_DAYS:
             # For each hour, calculate the impact of the solar generation and load.
             load = (
                 self.daily_load_averages.get(hour, 1000) / DEFAULT_INVERTER_EFFICIENCY
@@ -563,24 +513,24 @@ class TOUScheduler:
                 * self.solcast_api.forecast.get(f"{day}-{hour}", (0.0, 0.0))[0]
                 * (1 - self.daily_shading.get(hour, 0.0))
             )
-            batt_wh_usable = batt_wh_usable - load + pv
+            battery_wh_usable = battery_wh_usable - load + pv
             logger.debug(
                 "At %s battery energy is %6s wH.",
                 printable_hour((hour + 1) % 24),
-                f"{batt_wh_usable:6,.0f}",
+                f"{battery_wh_usable:6,.0f}",
             )
             # Monitor progress
-            if batt_wh_usable > 0:
+            if battery_wh_usable > 0:
                 minutes += 60
             else:
-                minutes -= int((batt_wh_usable / (pv - load)) * 60)
+                minutes -= int((battery_wh_usable / (pv - load)) * 60)
             # Move to next hour
             hour = (hour + 1) % 24
             if hour == 0:
                 day = day + timedelta(days=1)
 
-        self.batt_minutes_remaining = minutes
-        if minutes >= 5 * 24 * 60:
+        self.battery_minutes_remaining = minutes
+        if minutes >= FIVE_DAYS:
             logger.info(
                 "At %s: Battery will not be exhausted in the next 5 days.",
                 starting_time,
@@ -668,6 +618,8 @@ class TOUScheduler:
 
         # Write the new grid boost SoC to the inverter
         await self.write_grid_boost_soc(self.calculated_grid_boost)
+        # Save the new grid boost SoC to storage
+        await self._save_data()
 
     # Private hourly update method (called by hourly task)
     async def _hourly_updates(self) -> None:
@@ -679,12 +631,29 @@ class TOUScheduler:
         - Off-peak grid boost SoC
         - Remaining battery life
         """
+        # Check if the MQTT connection is established
+        if not mqtt.is_connected(self.hass):
+            logger.debug(msg="MQTT is not connected. Skipping hourly updates.")
+            return
+        
         # First, check if this is the right time for an hourly update. Return if not.
         if self._hourly_task_next_start >= datetime.now(ZoneInfo(self.timezone)):
             return
+        
+        # Get the battery capacity in Ah and update the total battery Ah capacity
+        self.battery_capacity = await self._update_total_battery_capacity()
+
+        # Get the realtime data from the MQTT sensors
+        self.realtime_battery_soc = self._safe_get_ha_sensor(BATTERY_SOC)
+        self.battery_wh_usable = (self.realtime_battery_soc / 100) * self.battery_capacity * 3600
+
+        self.data_updated = datetime.now(ZoneInfo(self.timezone)).strftime(
+            "%a %I:%M %p"
+        )
 
         # Reset the next hourly update time and continue with the updates
         now = datetime.now(ZoneInfo(self.timezone))
+
         self._hourly_task_next_start = now.replace(minute=7, second=0, microsecond=0) + timedelta(hours=1)
         # Update the daily load estimates (actually once a day, managed the function)
         await self._calculate_load_estimates()
@@ -694,81 +663,63 @@ class TOUScheduler:
         await self._calculate_shading()
         # If the forecast data changed, save that data and recompute off-peak grid boost SoC
         if self._update_tou_boost:
-            await self.async_save_forecast()
+            await self._save_forecast()
             self._update_tou_boost = False
         # Calculate the off-peak grid boost SoC in case the user changed other settings like days of load history
         # BUT... only do this after the current morning boost period has ended
-        if datetime.now(ZoneInfo(self.timezone)).hour >= 6:
+        if now.hour >= 6:
             await self._calculate_tou_boost_soc()
         # Compute remaining battery life for the user
         await self._calculate_tou_battery_remaining_time()
 
 
     # Start the TOU Scheduler - load saved data and start the background tasks
-    async def async_start(self) -> None:
+    async def _start(self) -> None:
         """Set up the config options callback when starting the TOU Scheduler."""
         # Ensure config_entry is set
         if not self.config_entry:
             logger.error("Config entry is not set.")
             return
         # Load the data from storage
-        await self.async_load_data()
-        # Load the shading data from storage
-        await self.async_load_shading()
-        # Load the forecast data from storage
-        
-        await self.async_load_forecast()
-        # Load the battery capacity and flow. 
-        # NOTE: Can't do this yet as mqtt may not be connected quite yet.
+        await self._load_data()
+        await self._load_shading()
+        await self._load_forecast()
+        # Try to update the data
+        await self._hourly_updates() 
 
 
     async def to_dict(self) -> dict[str, float | str | datetime]:
-        """Return this sensor data as a dictionary.
-
-        This method provides expected battery life statistics and the grid boost value for the upcoming day.
-        It also returns the inverter_api data and the solcast_api data.
+        """Return calculated data as a dictionary.
 
         Returns:
-            dict[str, Any]: A dictionary containing the sensor data.
+            dict[str, Any]: A dictionary containing the calculated TOU data.
+            If MQTT is not connected yet, returns an empty dictionary.
+            Realtime data is not included in the dictionary. Dashboards should directly access realtime data.
 
         """
         # Do hourly updates if needed
-        await self._hourly_updates()
+        if await self._hourly_updates() is False:
+            logger.debug("Unable to get. MQTT may not be connected yet.")
+            return {}
+        
+        # Calculate the estimated time remaining until the battery is exhausted since the last time the battery capacity was updated.
+        if self.data_updated is not None:
+            # Parse the last update time and set the correct timezone
+            data_updated_time = datetime.strptime(self.data_updated, "%a %I:%M %p").replace(
+                tzinfo=ZoneInfo(self.timezone)
+            )
+            # Compute elapsed minutes since last update
+            elapsed_minutes = int((datetime.now(ZoneInfo(self.timezone)) - data_updated_time).total_seconds() / 60)
+        else:
+            logger.debug("Data not updated yet. Returning default values.")
 
-        # Save the state of the key data every time we update the data
-        await self.async_save_data()
-
-        # Get the current hour
+        # Cache the current hour for the current hour load estimate below
         hour = datetime.now(ZoneInfo(self.timezone)).hour
-        exhausted = datetime.now(tz=ZoneInfo(self.timezone)) + timedelta(
-            minutes=self.batt_minutes_remaining
-        )
-        actual_grid_boost = await self.get_sensor_state(GRID_BOOST)
-        # Calculate the battery flow in %/hr (assumes flow is constant, which is not actually true)
-        self.battery_capacity = await self._get_battery_capacity()
-        self.battery_flow = await self._get_battery_flow()
-        batt_change_per_hour = 100 * self.battery_flow / self.battery_capacity if self.battery_capacity > 0 else 0.0
-        soc = await self.get_sensor_state(BATTERY_SOC)
-        batt_next_hour =  max(0,min(100,soc + batt_change_per_hour))
-        logger.debug(
-            "Battery SoC is %0.1f%%, change per hour is %0.1f%%, estimated in 1 hour: %0.1f%%.",
-            soc,
-            batt_change_per_hour,
-            batt_next_hour
-        )
-        # logger.debug(
-        #     "Battery flow is %s A, capacity is %s Ah, change per hour is %f%%.",
-        #     self.battery_flow,
-        #     self.battery_capacity,
-        #     batt_change_per_hour,
-        # )
+
         # Return the data as a dictionary
         return {
             # Battery data
-            "batt_time": self.batt_minutes_remaining / 60,
-            "batt_exhausted": exhausted,
-            "batt_change_per_hour": batt_change_per_hour,
-            "batt_next_hour": batt_next_hour,
+            "battery_time_remaining": self.battery_minutes_remaining / 60 - elapsed_minutes,
             # PV data
             "power_pv_estimated": self.solcast_api.get_previous_hour_pv_estimate(),
             "forecast_today": self.solcast_api.forecast_today,
@@ -776,7 +727,7 @@ class TOUScheduler:
             # Inverter info
             "load_estimate": self.load_estimates.get(str(hour), {}).get(hour, 1000),
             # Boost data
-            "actual_grid_boost": actual_grid_boost,
+            "actual_grid_boost": self.actual_grid_boost,
             "manual_grid_boost": self.manual_grid_boost,
             "grid_boost_mode": self._boost,
             "grid_boost_soc": self.calculated_grid_boost,
@@ -784,9 +735,7 @@ class TOUScheduler:
             "grid_boost_start": self.grid_boost_start,
             "grid_boost_on": self._boost,
             "update_hour": self.solcast_api.update_hour,
-            # Boost entity
-            "calculated_boost": self.calculated_grid_boost,
-            "manual_boost": self.manual_grid_boost,
+            # Misc data
             "min_soc": self.min_battery_soc,
             "confidence": self.solcast_api.percentile,
             "load_days": self.days_of_load_history,

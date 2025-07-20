@@ -36,6 +36,7 @@ LOAD_POWER = "sensor.deye_sunsynk_sol_ark_load_power"
 BATTERY_SOC = "sensor.deye_sunsynk_sol_ark_battery_state_of_charge"
 FLOAT_VOLTAGE = "sensor.deye_sunsynk_sol_ark_battery_float_charge_voltage"
 GRID_BOOST = "number.deye_sunsynk_sol_ark_capacity_point_1"
+BATTERY_CAPACITY = "sensor.deye_sunsynk_sol_ark_battery_capacity"
 
 # Battery constants
 BATTERY_AH = 300
@@ -43,7 +44,18 @@ BATTERY_MIN_SOC = 2
 BATTERY_MAX_WH = BATTERY_AH * 56.2
 BATTERY_LOST_WH = BATTERY_MIN_SOC/100 * BATTERY_AH * 56.2
 BATTERY_WH_PER_PERCENT = BATTERY_MAX_WH / 100
+FIVE_DAYS = 5 * 24 * 60 # in minutes
 
+# MQTT sensor names for Solar Assistant
+LOAD = "sensor.deye_sunsynk_sol_ark_load_power"
+PV = "sensor.deye_sunsynk_sol_ark_pv_power"
+BATTERY_POWER = "sensor.deye_sunsynk_sol_ark_battery_power"
+GRID_POWER = "sensor.deye_sunsynk_sol_ark_grid_power"
+LOAD_POWER = "sensor.deye_sunsynk_sol_ark_load_power"
+PV_POWER = "sensor.deye_sunsynk_sol_ark_pv_power"
+GRID_BOOST_SET = "sensor.deye_sunsynk_sol_ark_battery_capacity_point_1"
+MIN_BATTERY_SOC = "sensor.deye_sunsynk_sol_ark_battery_stop_discharge_capacity"
+BATTERY_SOC = "sensor.deye_sunsynk_sol_ark_battery_state_of_charge"
 
 # Default inverter efficiency value is 85%, in case we can't compute it
 DEFAULT_INVERTER_EFFICIENCY = 0.85
